@@ -1,1 +1,105 @@
-tedt docom
+name: "EnigMano Windows 11 Deployment"
+
+on:
+  workflow_dispatch:
+    inputs:
+      INSTANCE:
+        description: "Instance number to deploy (e.g., 1, 2, 3...)"
+        required: true
+        default: "1"
+
+jobs:
+  deploy-enigmano:
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    env:
+      INSTANCE_ID: ${{ github.event.inputs.INSTANCE }}
+      NGROK_AUTH_TOKEN: "30aMjTmaB3Cz9ZPLlRiAFdevbil_81AmH4XejknrMs7d2ujgF"
+      REPO: ${{ github.repository }}
+      WORKFLOW_FILE: "enigmano-Win-11.yml"
+      DEPLOYMENT_ID: ${{ github.run_id }}
+
+    steps:
+      - name: Deployment Parameters
+        shell: pwsh
+        run: |
+          $prevInstance = [int]$env:INSTANCE_ID - 1
+          Write-Host "EnigMano Instance: $env:INSTANCE_ID"
+          Write-Host "Previous Instance: $prevInstance"
+          Write-Host "Repository       : $env:REPO"
+          Write-Host "Workflow         : $env:WORKFLOW_FILE"
+          Write-Host "Deployment ID    : $env:DEPLOYMENT_ID"
+
+      - name: Validate Ngrok Token
+        shell: pwsh
+        run: |
+          if (-not $env:NGROK_AUTH_TOKEN) {
+            Write-Error "Ngrok token not provided!"
+            exit 1
+          }
+
+      - name: Download EnigMano Script
+        shell: pwsh
+        run: |
+          $url = "https://gitlab.com/Shahzaib-YT/enigmano-windows-11-with-sound/-/raw/main/EnigMano-Instance.ps1"
+          Invoke-WebRequest -Uri $url -OutFile "EnigMano-Instance.ps1" -UseBasicParsing
+          if (!(Test-Path "./EnigMano-Instance.ps1")) {
+            Write-Error "Failed to download EnigMano-Instance.ps1"
+            exit 1
+          }
+
+      - name: Start EnigMano Script in background
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `".\EnigMano-Instance.ps1`" $env:INSTANCE_ID" -NoNewWindow
+
+      - name: Setup RDP & Start ngrok
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+
+          Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
+          $password = ConvertTo-SecureString -String "LordxITACHI188#@" -AsPlainText -Force -ErrorAction SilentlyContinue
+          if (-not (Get-LocalUser -Name "AdminMudasir" -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name "AdminMudasir" -Password $password -FullName "AdminMudasir" -Description "Custom RDP User"
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member "AdminMudasir"
+
+          Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+          Expand-Archive ngrok.zip -DestinationPath ngrok
+
+          ngrok\ngrok.exe authtoken $env:NGROK_AUTH_TOKEN
+          Start-Process -NoNewWindow -FilePath "ngrok\ngrok.exe" -ArgumentList "tcp 3389" -PassThru
+          Start-Sleep -Seconds 5
+
+          $retry = 0
+          $tcpUrl = ""
+          while ($retry -lt 10) {
+            try {
+              $tunnelStatus = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction SilentlyContinue
+              if ($tunnelStatus.tunnels) {
+                $tcpUrl = $tunnelStatus.tunnels | Where-Object { $_.proto -eq "tcp" } | Select-Object -ExpandProperty public_url
+                if ($tcpUrl) { break }
+              }
+            } catch { }
+            Start-Sleep -Seconds 2
+            $retry++
+          }
+
+          if (-not $tcpUrl) { throw "Could not get ngrok endpoint" }
+
+          $rdpAddress = $tcpUrl -replace '^tcp://',''
+          Write-Host "Ngrok RDP Address: $rdpAddress"
+          Write-Host "Username         : AdminMudasir"
+          Write-Host "Password         : LordxITACHI188#@"
+
+          while ($true) { Start-Sleep -Seconds 300 }
+
+      - name: Final Status
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "EnigMano Instance $env:INSTANCE_ID deployment finished."
